@@ -5,9 +5,7 @@ import android.telecom.CallScreeningService
 
 /**
  * Initial Android call-screening foundation.
- *
- * This prototype deliberately allows calls and does not upload phone numbers.
- * Later phases can add privacy-reviewed lookup and spam logic.
+ * This prototype deliberately allows calls and does not upload numbers.
  */
 class CallerScreeningService : CallScreeningService() {
     override fun onScreenCall(callDetails: Call.Details) {
@@ -17,7 +15,6 @@ class CallerScreeningService : CallScreeningService() {
             .setSkipCallLog(false)
             .setSkipNotification(false)
             .build()
-
         respondToCall(callDetails, response)
     }
 }
