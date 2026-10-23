@@ -34,7 +34,7 @@ private data class PhoneContact(
     val isStarred: Boolean
 )
 
-internal data class CallerLookupResult(
+data class CallerLookupResult(
     val found: Boolean,
     val label: String = "",
     val category: String = "",
@@ -730,7 +730,7 @@ class MainActivity : Activity() {
     private fun editText(hintText: String): EditText = EditText(this).apply {
         hint = hintText
         textSize = 15f
-        singleLine = true
+        setSingleLine(true)
         setTextColor(0xFF172B4D.toInt())
         setHintTextColor(0xFF91A0B7.toInt())
         setPadding(dp(12), dp(11), dp(12), dp(11))
