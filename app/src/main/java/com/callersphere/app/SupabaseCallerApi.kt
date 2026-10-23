@@ -22,6 +22,8 @@ data class SupabaseActionResult(
 object SupabaseCallerApi {
     private const val PREFS = "callersphere_supabase_session"
     private const val ACCESS_TOKEN = "anonymous_access_token"
+    private const val REFRESH_TOKEN = "anonymous_refresh_token"
+    private const val EXPIRES_AT = "anonymous_token_expires_at"
     private val executor = Executors.newCachedThreadPool()
 
     fun isConfigured(): Boolean =
@@ -134,9 +136,58 @@ object SupabaseCallerApi {
     private fun getOrCreateAnonymousToken(context: Context): String {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val existing = prefs.getString(ACCESS_TOKEN, null)
-        if (!existing.isNullOrBlank()) return existing
+        val expiresAt = prefs.getLong(EXPIRES_AT, 0L)
+        if (!existing.isNullOrBlank() && expiresAt > System.currentTimeMillis() + 60_000L) {
+            return existing
+        }
 
-        val conn = (URL(BuildConfig.SUPABASE_URL.trimEnd('/') + "/auth/v1/signup")
+        val refresh = prefs.getString(REFRESH_TOKEN, null)
+        if (!refresh.isNullOrBlank()) {
+            val renewed = refreshAccessToken(context, refresh)
+            if (!renewed.isNullOrBlank()) return renewed
+        }
+        return createAnonymousSession(context)
+    }
+
+    private fun refreshAccessToken(context: Context, refreshToken: String): String? {
+        return try {
+            val json = requestAuthJson(
+                "/auth/v1/token?grant_type=refresh_token",
+                JSONObject().put("refresh_token", refreshToken)
+            )
+            persistSession(context, json)
+            json.optString("access_token", "").takeIf { it.isNotBlank() }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun createAnonymousSession(context: Context): String {
+        val json = requestAuthJson("/auth/v1/signup", JSONObject())
+        val token = json.optString("access_token", "")
+        if (token.isBlank()) {
+            throw IllegalStateException(
+                "Supabase did not return a session token. Enable anonymous sign-ins in Supabase Auth settings."
+            )
+        }
+        persistSession(context, json)
+        return token
+    }
+
+    private fun persistSession(context: Context, json: JSONObject) {
+        val token = json.optString("access_token", "")
+        val refresh = json.optString("refresh_token", "")
+        val expiresInSeconds = json.optLong("expires_in", 3600L).coerceAtLeast(60L)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString(ACCESS_TOKEN, token)
+            .putString(REFRESH_TOKEN, refresh)
+            .putLong(EXPIRES_AT, System.currentTimeMillis() + expiresInSeconds * 1000L)
+            .apply()
+    }
+
+    private fun requestAuthJson(path: String, body: JSONObject): JSONObject {
+        val conn = (URL(BuildConfig.SUPABASE_URL.trimEnd('/') + path)
             .openConnection() as HttpURLConnection)
         try {
             conn.requestMethod = "POST"
@@ -144,10 +195,11 @@ object SupabaseCallerApi {
             conn.readTimeout = 12000
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json")
+            // The public client key belongs in the apikey header. A publishable key
+            // is not a user JWT and must not be used as the Bearer token.
             conn.setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY)
-            conn.setRequestProperty("Authorization", "Bearer " + BuildConfig.SUPABASE_ANON_KEY)
             conn.outputStream.use { out ->
-                out.write("{}".toByteArray(StandardCharsets.UTF_8))
+                out.write(body.toString().toByteArray(StandardCharsets.UTF_8))
             }
             val status = conn.responseCode
             val stream = if (status in 200..299) conn.inputStream else conn.errorStream
@@ -156,16 +208,11 @@ object SupabaseCallerApi {
             }.orEmpty()
             if (status !in 200..299) {
                 throw IllegalStateException(
-                    "Supabase anonymous sign-in failed (HTTP " + status +
-                        "). Enable anonymous sign-ins in Supabase Auth and check the public client key."
+                    "Supabase Auth failed (HTTP " + status +
+                        "). Enable anonymous sign-ins and check the public client key."
                 )
             }
-            val token = JSONObject(responseText).optString("access_token", "")
-            if (token.isBlank()) {
-                throw IllegalStateException("Supabase did not return a session token. Check anonymous sign-in settings.")
-            }
-            prefs.edit().putString(ACCESS_TOKEN, token).apply()
-            return token
+            return JSONObject(responseText)
         } finally {
             conn.disconnect()
         }
